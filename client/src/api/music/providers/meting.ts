@@ -115,8 +115,10 @@ function extractSongId(raw: Record<string, unknown>, url: string): string {
   if (rawId !== undefined && rawId !== null && String(rawId).trim()) {
     return String(rawId).trim();
   }
-  if (url && !/^https?:\/\//i.test(url)) return url;
-  return extractIdFromUrl(url).trim();
+  // 服务端会将解析链接改写为 /api/meting，必须先取查询参数，不能把相对链接当 ID。
+  const urlId = extractIdFromUrl(url).trim();
+  if (urlId) return urlId;
+  return /^[0-9A-Za-z_-]+$/.test(url) ? url : '';
 }
 
 function normalizeSong(raw: Record<string, unknown>, source: MusicSource): SearchResult {

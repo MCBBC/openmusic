@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { analyzeFavoritesMigration, appendMissingFavoriteSongs, buildFavoritesSyncResult, favoriteSongKey, filterFavoriteCategories, mergeFavoriteSnapshots } from './favoritesSync.js';
 
 const song = (id, source = 'netease') => ({ id, source, name: id });
@@ -72,4 +74,30 @@ test('身份迁移追加缺失收藏并保持账户原顺序', () => {
   assert.deepEqual(result.items.map(favoriteSongKey), ['netease:1', 'netease:2', 'netease:3']);
   assert.equal(result.imported, 1);
   assert.equal(result.dropped, 1);
+});
+
+test('Redis 收藏不可读时不得返回成功空列表或用空列表覆盖损坏数据', async () => {
+  const source = readFileSync(new URL('./roomStorage.js', import.meta.url), 'utf8');
+  const functions = source.slice(source.indexOf('function parseFavorites('), source.indexOf('export async function listFavoriteSongs('));
+  let raw = JSON.stringify([song('1')]);
+  let writes = 0;
+  const context = vm.createContext({
+    enabled: false,
+    redisClient: { get: async () => raw, eval: async () => { writes += 1; return 1; } },
+    favoriteKey: (id) => id, MAX_FAVORITES: 5000, FAVORITES_CAS_RETRIES: 8,
+    FAVORITES_CAS_SCRIPT: 'fixture-script',
+  });
+  vm.runInContext(functions, context);
+  await assert.rejects(context.readFavorites('guest_user_123'), /收藏存储暂不可用/);
+  context.enabled = true;
+  assert.equal((await context.readFavorites('guest_user_123'))[0].id, '1');
+  for (const invalid of ['', '{invalid', '{}']) {
+    raw = invalid;
+    await assert.rejects(context.readFavorites('guest_user_123'), /收藏数据读取失败/);
+    await assert.rejects(context.mutateFavoritesAtomically('guest_user_123', () => ({ items: [song('2')] })), /收藏数据读取失败/);
+    assert.equal(writes, 0);
+    assert.equal(raw, invalid);
+  }
+  raw = null;
+  assert.equal((await context.readFavorites('guest_user_123')).length, 0);
 });

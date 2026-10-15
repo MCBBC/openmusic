@@ -888,6 +888,11 @@ function normalizeMetingSongIds(data) {
 
   for (const item of list) {
     if (!item || typeof item !== 'object') continue;
+    // 在媒体链接改写为相对地址前补齐歌曲 ID，兼容按 url 提取 ID 的旧客户端。
+    if (item.id == null || !String(item.id).trim()) {
+      const media = typeof item.url === 'string' ? parseMetingMediaQuery(item.url) : null;
+      if (media?.type === 'url') item.id = media.id;
+    }
     for (const field of ['url', 'pic', 'lrc']) {
       if (typeof item[field] === 'string' && /^https?:\/\//i.test(item[field])) {
         item[field] = browserMetingMediaUrl(item[field]);
@@ -2379,51 +2384,59 @@ app.post('/api/session/bootstrap', async (req, res) => {
     setSoftBlockHeaders(res, code);
     return res.status(500).json(softBlockPayload(code));
   }
-  const cookieDeviceId = resolveDeviceIdFromCookieHeader(req.headers?.cookie || '');
-  const bodyDeviceId = resolveBodyDeviceId(req);
-  const now = Math.floor(Date.now() / 1000);
+  try {
+    const cookieDeviceId = resolveDeviceIdFromCookieHeader(req.headers?.cookie || '');
+    const bodyDeviceId = resolveBodyDeviceId(req);
+    const now = Math.floor(Date.now() / 1000);
 
-  const existing = resolveIdentityFromRequest(req);
-  if (existing) {
-    // 已认证：可用 body deviceId 对齐绑定；恢复路径不依赖 body
-    const deviceId = cookieDeviceId || bodyDeviceId || createServerClientId();
-    await linkDeviceToUser(deviceId, existing.userId);
-    const shouldRenew = existing.expiresAt - now <= SESSION_RENEW_WITHIN_SEC;
-    const signIat = shouldRenew ? now : existing.iat;
-    const token = signClientId(existing.userId, signIat);
-    return sendBootstrapResponse(res, existing.userId, signIat, token, deviceId);
-  }
-
-  // 无身份 Cookie：仅允许 HttpOnly openmusic_did 恢复同一 userId
-  if (cookieDeviceId) {
-    const boundUserId = await getUserIdForDevice(cookieDeviceId);
-    if (boundUserId) {
-      await linkDeviceToUser(cookieDeviceId, boundUserId);
-      const signIat = now;
-      return sendBootstrapResponse(
-        res,
-        boundUserId,
-        signIat,
-        signClientId(boundUserId, signIat),
-        cookieDeviceId,
-      );
+    const existing = resolveIdentityFromRequest(req);
+    if (existing) {
+      // 已认证：可用 body deviceId 对齐绑定；恢复路径不依赖 body
+      const deviceId = cookieDeviceId || bodyDeviceId || createServerClientId();
+      if (!await linkDeviceToUser(deviceId, existing.userId)) throw new Error('设备绑定未持久化');
+      const shouldRenew = existing.expiresAt - now <= SESSION_RENEW_WITHIN_SEC;
+      const signIat = shouldRenew ? now : existing.iat;
+      const token = signClientId(existing.userId, signIat);
+      return sendBootstrapResponse(res, existing.userId, signIat, token, deviceId);
     }
-  }
 
-  if (!limitNewSessionBootstrap(`session-new:${requestIp}`)) {
-    const code = SOFT_BLOCK_CODES.SESSION_NEW_LIMIT;
-    appendAdminAudit('session_blocked', {
-      reason: 'new_session_rate_limit',
-      code,
-    }, requestIp);
-    setSoftBlockHeaders(res, code);
-    return res.status(500).json(softBlockPayload(code));
+    // 无身份 Cookie：仅允许 HttpOnly openmusic_did 恢复同一 userId
+    if (cookieDeviceId) {
+      const boundUserId = await getUserIdForDevice(cookieDeviceId);
+      if (boundUserId) {
+        if (!await linkDeviceToUser(cookieDeviceId, boundUserId)) throw new Error('设备绑定未持久化');
+        const signIat = now;
+        return sendBootstrapResponse(
+          res,
+          boundUserId,
+          signIat,
+          signClientId(boundUserId, signIat),
+          cookieDeviceId,
+        );
+      }
+    }
+
+    if (!limitNewSessionBootstrap(`session-new:${requestIp}`)) {
+      const code = SOFT_BLOCK_CODES.SESSION_NEW_LIMIT;
+      appendAdminAudit('session_blocked', {
+        reason: 'new_session_rate_limit',
+        code,
+      }, requestIp);
+      setSoftBlockHeaders(res, code);
+      return res.status(500).json(softBlockPayload(code));
+    }
+    const userId = createServerClientId();
+    const deviceId = cookieDeviceId || createServerClientId();
+    if (!await linkDeviceToUser(deviceId, userId)) throw new Error('设备绑定未持久化');
+    const signIat = now;
+    return sendBootstrapResponse(res, userId, signIat, signClientId(userId, signIat), deviceId);
+  } catch {
+    incrementMetric('session_bootstrap_storage_error_total');
+    return res.status(503).json({
+      error: '身份存储暂不可用，请稍后重试',
+      code: 'SESSION_STORAGE_UNAVAILABLE',
+    });
   }
-  const userId = createServerClientId();
-  const deviceId = cookieDeviceId || createServerClientId();
-  await linkDeviceToUser(deviceId, userId);
-  const signIat = now;
-  return sendBootstrapResponse(res, userId, signIat, signClientId(userId, signIat), deviceId);
 });
 
 // ---------- 普通用户账户：邮箱验证码注册 / 账号密码登录 ----------

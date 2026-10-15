@@ -147,7 +147,6 @@ export default function StartupSplash({ ready, onEnter }: { ready: boolean; onEn
       <main className="om-startup__copy">
         <p className="om-startup__eyebrow om-startup__chrome om-startup__reveal"><span />让此刻，彼此同频</p>
         <h1 className="om-startup__headline"><span data-startup-line>{siteSeo.heroHeadline}</span><span data-startup-line className="om-startup__accent">{siteSeo.heroSubline}</span></h1>
-        <p className="om-startup__description om-startup__chrome om-startup__reveal">一首歌，把我们连在一起。</p>
       </main>
       <footer className="om-startup__footer om-startup__chrome om-startup__reveal">
         <span className="om-startup__interaction"><span className="om-startup__mouse-hint">移动光标，拨动共鸣</span><span className="om-startup__touch-hint">音乐，让我们相遇</span></span>

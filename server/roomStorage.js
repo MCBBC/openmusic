@@ -336,24 +336,25 @@ function normalizeFavoriteSong(song) {
 }
 
 function parseFavorites(raw) {
-  if (!raw) return [];
+  if (raw == null) return [];
   try {
     const items = JSON.parse(raw);
-    return Array.isArray(items) ? items : [];
+    if (Array.isArray(items)) return items;
   } catch {
-    return [];
+    // 损坏的数据不能按空收藏处理，否则下次写入会覆盖原始内容。
   }
+  throw new Error('收藏数据读取失败，请稍后重试');
 }
 
 async function readFavoritesSnapshot(userId) {
-  if (!enabled || !redisClient) return [];
+  if (!enabled || !redisClient) throw new Error('收藏存储暂不可用，请稍后重试');
   const raw = await redisClient.get(favoriteKey(userId));
   return { raw, items: parseFavorites(raw) };
 }
 
 async function readFavorites(userId) {
   const snapshot = await readFavoritesSnapshot(userId);
-  return Array.isArray(snapshot) ? snapshot : snapshot.items;
+  return snapshot.items;
 }
 
 function capFavorites(items) {

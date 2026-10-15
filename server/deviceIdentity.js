@@ -50,12 +50,12 @@ async function persistDeviceBinding(deviceId, userId) {
   const client = getRedisClient();
   if (!client) {
     console.error('Redis: 不可用，设备身份绑定未持久化');
-    return;
+    return false;
   }
 
   const did = sanitizeDeviceId(deviceId);
   const uid = sanitizeDeviceId(userId);
-  if (!did || !uid) return;
+  if (!did || !uid) return false;
 
   try {
     const previousUser = await client.get(`${DEVICE_USER_PREFIX}${did}`);
@@ -75,8 +75,10 @@ async function persistDeviceBinding(deviceId, userId) {
       const staleKey = `${DEVICE_USER_PREFIX}${staleDeviceId}`;
       if (await client.get(staleKey) === uid) await client.del(staleKey);
     }
+    return true;
   } catch (err) {
     console.error('Redis: 保存设备身份绑定失败:', err.message);
+    return false;
   }
 }
 
@@ -86,8 +88,8 @@ export async function linkDeviceToUser(deviceId, userId) {
   const uid = sanitizeDeviceId(userId);
   if (!did || !uid) return false;
 
+  if (!await persistDeviceBinding(did, uid)) return false;
   rememberDeviceBinding(did, uid);
-  await persistDeviceBinding(did, uid);
   return true;
 }
 
@@ -98,9 +100,8 @@ export async function getUserIdForDevice(deviceId) {
   const cached = deviceToUser.get(did);
   if (cached) return cached;
 
-  if (!isRedisEnabled()) return null;
   const client = getRedisClient();
-  if (!client) return null;
+  if (!isRedisEnabled() || !client) throw new Error('设备身份存储暂不可用');
 
   try {
     const uid = await client.get(`${DEVICE_USER_PREFIX}${did}`);
@@ -113,6 +114,7 @@ export async function getUserIdForDevice(deviceId) {
     }
   } catch (err) {
     console.error('Redis: 读取设备身份绑定失败:', err.message);
+    throw new Error('设备身份存储暂不可用');
   }
   return null;
 }

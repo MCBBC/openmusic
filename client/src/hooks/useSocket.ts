@@ -926,6 +926,7 @@ export function useSocket() {
         id: s.id,
         transport: s.io.engine?.transport?.name,
       }));
+      window.dispatchEvent(new Event('openmusic:socket-connected'));
       void attemptRoomRejoin('connect');
     });
     s.on('disconnect', handleSocketDisconnect);

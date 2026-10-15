@@ -39,6 +39,18 @@ test('浏览器媒体不使用 Docker 内部直链，标准解析和汽水保持
   assert.equal(context.normalizeMetingSongIds(song), song);
   assert.equal(song.url, '');
   assert.ok(song.pic.startsWith('/api/meting?'));
+  const searchSong = { title: '网易搜索歌曲', url: 'http://meting-api:3000/api?server=netease&type=url&id=1901371647' };
+  context.normalizeMetingSongIds([searchSong]);
+  assert.equal(searchSong.id, '1901371647');
+  assert.equal(searchSong.url, '/api/meting?server=netease&id=1901371647&type=url');
+  context.normalizeMetingSongIds([searchSong]);
+  assert.equal(searchSong.id, '1901371647');
+  const explicitId = { id: '123', url: 'http://meting-api:3000/api?server=netease&type=url&id=456' };
+  context.normalizeMetingSongIds([explicitId]);
+  assert.equal(explicitId.id, '123');
+  const coverOnly = { pic: 'http://meting-api:3000/api?server=netease&type=pic&id=999' };
+  context.normalizeMetingSongIds([coverOnly]);
+  assert.equal(coverOnly.id, undefined);
   const legacy = [{ url: '123456', lrc: '[00:01]歌词' }];
   context.normalizeMetingSongIds({ data: legacy });
   assert.equal(legacy[0].id, '123456');

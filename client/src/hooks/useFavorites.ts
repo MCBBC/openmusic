@@ -17,7 +17,8 @@ import {
 
 let sharedFavoriteIds = new Set<string>();
 let sharedFavoriteSongs: FavoriteSong[] = [];
-let loadPromise: Promise<void> | null = null;
+type FavoritesLoadResult = { success: boolean; error?: string };
+let loadPromise: Promise<FavoritesLoadResult> | null = null;
 const listeners = new Set<() => void>();
 let sharedSyncState = readFavoritesSyncState();
 const syncListeners = new Set<() => void>();
@@ -100,12 +101,11 @@ export function useFavorites() {
 
   const ensureLoaded = useCallback(async () => {
     if (loadPromise) return loadPromise;
-    loadPromise = (async () => {
+    const pending = (async (): Promise<FavoritesLoadResult> => {
       const guestCached = readCache(GUEST_CACHE_KEY);
       if (guestCached.length) updateSharedFavorites(guestCached);
 
-      let account: Awaited<ReturnType<typeof fetchAccountSession>> = null;
-      try { account = await fetchAccountSession(); } catch { /* use cache */ }
+      const account = await fetchAccountSession();
 
       const legacyGuestCategories = readCategories(GUEST_CATEGORIES_KEY);
       const categoryMigration = await migrateFavoriteCategories(
@@ -121,10 +121,7 @@ export function useFavorites() {
 
       if (!account) {
         const result = await listFavorites();
-        if (!result.success) {
-          if (!guestCached.length) updateSharedFavorites([]);
-          return;
-        }
+        if (!result.success) throw new Error(result.error || '收藏列表加载失败');
         const migrated = await migrateFavoriteCache(
           result.favorites || [],
           guestCached,
@@ -132,7 +129,7 @@ export function useFavorites() {
         );
         if (migrated.migrated && guestCached.length) removeCache(GUEST_CACHE_KEY);
         updateSharedFavorites(migrated.favorites);
-        return;
+        return { success: true };
       }
 
       const cacheKey = accountCacheKey(account.id);
@@ -167,15 +164,23 @@ export function useFavorites() {
           updateSharedSyncState(markFavoritesSyncFailed(error, attempt));
           throw error;
         }
-        return;
+        return { success: true };
       }
 
       const result = await listFavorites();
-      if (!result.success) return;
+      if (!result.success) throw new Error(result.error || '收藏列表加载失败');
       if (accountCached.length) removeCache(cacheKey);
       updateSharedFavorites(result.favorites || []);
-    })().catch(() => undefined);
-    return loadPromise;
+      return { success: true };
+    })().catch((error): FavoritesLoadResult => ({
+      success: false,
+      error: error instanceof Error ? error.message : '收藏列表加载失败，请重试',
+    }));
+    loadPromise = pending;
+    void pending.then((result) => {
+      if (!result.success && loadPromise === pending) loadPromise = null;
+    });
+    return pending;
   }, [createFavoriteCategory, importFavoritesOnServer, listFavoriteCategories, listFavorites]);
 
   useEffect(() => { void ensureLoaded(); }, [ensureLoaded]);
@@ -193,12 +198,14 @@ export function useFavorites() {
 
   useEffect(() => {
     const retryWhenOnline = () => {
-      if (!readCache(GUEST_CACHE_KEY).length) return;
-      loadPromise = null;
-      void ensureLoaded();
+      if (!loadPromise) void ensureLoaded();
     };
     window.addEventListener('online', retryWhenOnline);
-    return () => window.removeEventListener('online', retryWhenOnline);
+    window.addEventListener('openmusic:socket-connected', retryWhenOnline);
+    return () => {
+      window.removeEventListener('online', retryWhenOnline);
+      window.removeEventListener('openmusic:socket-connected', retryWhenOnline);
+    };
   }, [ensureLoaded]);
 
   useEffect(() => {
@@ -222,24 +229,27 @@ export function useFavorites() {
 
   const toggleFavorite = useCallback(async (song: Song) => {
     const key = songKey(song);
-    let account: Awaited<ReturnType<typeof fetchAccountSession>> = null;
+    const favorite = !favoriteIds.has(key);
     try {
-      account = await fetchAccountSession();
-    } catch {
-      return { success: false as const, error: '账户状态暂时无法确认，请稍后重试' };
-    }
-
-    if (!account) {
-      const result = await setFavorite(song, !favoriteIds.has(key));
-      if (!result.success) return { success: false as const, error: result.error || '收藏失败' };
+      try {
+        await fetchAccountSession();
+      } catch {
+        throw new Error('账户状态暂时无法确认，请稍后重试');
+      }
+      const result = await setFavorite(song, favorite);
+      if (!result.success) throw new Error(result.error || '收藏失败');
       if (result.favorites) updateSharedFavorites(result.favorites);
+      window.dispatchEvent(new CustomEvent('openmusic:visual-toast', {
+        detail: { message: favorite ? '已收藏' : '已取消收藏', type: 'success' },
+      }));
       return { success: true as const, favorites: result.favorites || sharedFavoriteSongs };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '收藏失败，请稍后重试';
+      window.dispatchEvent(new CustomEvent('openmusic:visual-toast', {
+        detail: { message, type: 'error' },
+      }));
+      return { success: false as const, error: message };
     }
-
-    const result = await setFavorite(song, !favoriteIds.has(key));
-    if (!result.success) return { success: false as const, error: result.error || '收藏失败' };
-    if (result.favorites) updateSharedFavorites(result.favorites);
-    return { success: true as const, favorites: result.favorites || sharedFavoriteSongs };
   }, [favoriteIds, setFavorite]);
 
   const applyFavorites = useCallback((favorites: FavoriteSong[]) => {
@@ -259,8 +269,8 @@ export function useFavorites() {
   }, [ensureLoaded]);
 
   const listCachedFavorites = useCallback(async () => {
-    await ensureLoaded();
-    return { success: true, favorites: sharedFavoriteSongs, error: undefined as string | undefined };
+    const result = await ensureLoaded();
+    return { ...result, favorites: sharedFavoriteSongs };
   }, [ensureLoaded]);
 
   const listCachedCategories = useCallback(async () => {
